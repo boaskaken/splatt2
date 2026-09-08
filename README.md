@@ -261,6 +261,13 @@ beside `main.py` are copied on first use when no new config exists; old
 black/paper keys are migrated to inner/outer names when loaded. Explicit
 new names take priority.
 
+### Camera zoom and tracker view
+
+Use the camera panel's **Tracker view** toggle to inspect the greyscale
+image passed to marker detection. The camera zoom slider digitally crops
+and enlarges the centre of the captured image from 1× to 8×. Detection also
+supports sharpening and configurable maximum detection dimensions.
+
 ### Advanced
 | Setting | Description |
 |---------|-------------|
@@ -268,6 +275,7 @@ new names take priority.
 | Approach zone | How far outside the target the software tracks approach (× scoring radius) |
 | Pre-shot window | How many seconds before the shot the trace turns yellow |
 | Final window | How many seconds before the shot the trace turns red |
+| Voice enabled | Enable offline spoken scores and clock positions after shots. Enabled by default; configured under Advanced → Voice Feedback. |
 
 ### Spike Filter (Settings → Camera)
 | Setting | Description |
@@ -309,6 +317,7 @@ score,ring_diameter_mm           ← data section header
 | `10m_air_rifle.csv` | ISSF 10m Air Rifle — 45.5mm card, .177 |
 | `10m_air_pistol.csv` | ISSF 10m Air Pistol — 155.5mm card, .177 |
 | `6yd_air_rifle.csv` | NSRA 6 Yard Air Rifle — 31mm card, .22, inward gauging |
+| `25yd_prone_rifle.csv` | NSRA 25 Yard Prone Rifle |
 
 ### Target Creator
 

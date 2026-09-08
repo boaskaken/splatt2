@@ -45,6 +45,8 @@ from ui.theme import (
     set_button_variant as _set_variant,
 )
 
+import pyttsx3
+
 
 def _default_save_dir() -> str:
     """Per-user ``sessions/`` folder, with a documents fallback on error."""
@@ -1031,6 +1033,12 @@ class SplattApp:
         shot.score = score
         shot.ring_index = ring
         shot.mark_index = mark_idx
+
+        def _speek():
+            pyttsx3.speak(f"{score:.1f}, {shot.clock_position} o'clock" if self._decimal_scoring else f"{int(score)} at {shot.clock_position} o'clock")
+
+        if self.cfg.get("voice_enabled", True):
+            threading.Thread(target=_speek).start()
 
         if self.session._writer and self.session._writer.is_open:
             self.session._writer.write_shot(shot)
@@ -3370,6 +3378,11 @@ class SettingsDialog(tk.Toplevel):
         self._note(tab, "Session name is used for saved file names.")
         tk.Frame(tab, bg=BG_DARK, height=16).pack()
 
+        self._section(tab, "Voice Feedback")
+        self._voice_enabled = tk.BooleanVar(value=self.cfg.get("voice_enabled", False))
+        self._row(tab, "Voice enabled",
+                  lambda p: ttk.Checkbutton(p, variable=self._voice_enabled))
+
     def _collect(self):
         for attr in dir(self):
             if attr.startswith("_v_"):
@@ -3397,6 +3410,8 @@ class SettingsDialog(tk.Toplevel):
             self.cfg["use_clahe"] = self._clahe_var.get()
         if hasattr(self, "_im_var"):
             self.cfg["ignore_misses"] = self._im_var.get()
+        if hasattr(self, "_voice_enabled"):
+            self.cfg["voice_enabled"] = self._voice_enabled.get()
 
     def _apply(self):
         self._collect()

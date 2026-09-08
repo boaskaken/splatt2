@@ -298,6 +298,9 @@ DEFAULT_CONFIG = {
     "shooter_name": "",
     "shots_per_series": 10,
     "save_directory": "",
+
+    # Voice feedback
+    "voice_enabled": True,  # speak scores and clock positions
 }
 
 

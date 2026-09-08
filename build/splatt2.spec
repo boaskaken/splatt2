@@ -28,6 +28,15 @@ hiddenimports += sd_hidden
 # scipy uses lazy submodule imports that PyInstaller's tracer misses.
 hiddenimports += collect_submodules("scipy")
 
+# Voice announcements load their platform driver by name at runtime.
+if sys.platform.startswith("win"):
+    hiddenimports.append("pyttsx3.drivers.sapi5")
+elif sys.platform == "darwin":
+    hiddenimports.append("pyttsx3.drivers.nsss")
+else:
+    hiddenimports.append("pyttsx3.drivers.espeak")
+
+
 
 a = Analysis(
     [ENTRY],
