@@ -39,6 +39,10 @@ class TrackFrame:
     aim_px: Optional[Tuple[int, int]] = None
     markers_found: int = 0
     frame_display: Optional[np.ndarray] = None
+    # Post-preprocessing diagnostic frame (BGR) showing what the ArUco
+    # detector receives, with marker boxes and aim crosshair drawn on
+    # top so it is directly comparable to ``frame_display``.
+    processed: Optional[np.ndarray] = None
     homography: Optional[np.ndarray] = None
     quality: float = 0.0
 
@@ -114,6 +118,7 @@ class ArucoTracker:
         clahe_clip: float = 4.0,
         marker_count: int = 4,
         brightness_target: float = 128.0,
+        sharpen: float = 0.0,
     ):
         self.board_width_mm = board_width_mm
         self.board_height_mm = board_height_mm
@@ -121,12 +126,25 @@ class ArucoTracker:
         self.margin_mm = margin_mm
         self.use_clahe = use_clahe
         self.brightness_target = float(brightness_target)
+        # Unsharp-mask amount applied after CLAHE. 0 disables; the
+        # useful range is roughly 0.3 - 1.5 for crisping up soft
+        # marker edges at distance.
+        self.sharpen = max(0.0, float(sharpen))
 
         dict_id = getattr(cv2.aruco, aruco_dict_name, cv2.aruco.DICT_4X4_50)
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
         self.detector_params = cv2.aruco.DetectorParameters()
         self.detector_params.cornerRefinementMethod = (
             cv2.aruco.CORNER_REFINE_SUBPIX)
+        # Allow markers slightly smaller than the 3% default so 4-marker
+        # boards stay detected when zoomed/cropped tight at distance.
+        self.detector_params.minMarkerPerimeterRate = 0.02
+        # Widen the adaptive threshold sweep so a marker isn't missed
+        # purely because the default window size is wrong for the
+        # current frame size.
+        self.detector_params.adaptiveThreshWinSizeMin = 3
+        self.detector_params.adaptiveThreshWinSizeMax = 23
+        self.detector_params.adaptiveThreshWinSizeStep = 10
         self.detector = cv2.aruco.ArucoDetector(
             self.aruco_dict, self.detector_params)
 
@@ -150,6 +168,10 @@ class ArucoTracker:
         result.frame_display = frame.copy()
 
         gray = self._preprocess(frame)
+        # ``processed`` mirrors the detector's input as a 3-channel
+        # image so the same overlays can be drawn on it for the UI's
+        # tracker-view diagnostic.
+        result.processed = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         corners, ids, _ = self.detector.detectMarkers(gray)
 
         if ids is None or len(ids) == 0:
@@ -160,6 +182,7 @@ class ArucoTracker:
         ids_flat = ids.flatten()
         result.markers_found = len(ids_flat)
         cv2.aruco.drawDetectedMarkers(result.frame_display, corners, ids)
+        cv2.aruco.drawDetectedMarkers(result.processed, corners, ids)
 
         img_pts: List[np.ndarray] = []
         brd_pts: List[np.ndarray] = []
@@ -191,16 +214,28 @@ class ArucoTracker:
         return result
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Greyscale, software gain normalisation, then CLAHE."""
+        """Greyscale, software gain normalisation, then CLAHE.
+
+        An optional unsharp mask runs after CLAHE to tighten marker
+        edges that have been softened by lens blur or downscaling.
+        """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if not self.use_clahe:
-            return gray
-        mean = float(np.mean(gray))
-        if mean > 1.0:
-            scale = self.brightness_target / mean
-            gray = np.clip(
-                gray.astype(np.float32) * scale, 0, 255).astype(np.uint8)
-        return self._clahe.apply(gray)
+        if self.use_clahe:
+            mean = float(np.mean(gray))
+            if mean > 1.0:
+                scale = self.brightness_target / mean
+                gray = np.clip(
+                    gray.astype(np.float32) * scale, 0, 255).astype(np.uint8)
+            gray = self._clahe.apply(gray)
+        if self.sharpen > 0.0:
+            gray = self._unsharp_mask(gray, self.sharpen)
+        return gray
+
+    @staticmethod
+    def _unsharp_mask(gray: np.ndarray, amount: float) -> np.ndarray:
+        """Sharpen by subtracting a Gaussian-blurred copy of the image."""
+        blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.5, sigmaY=1.5)
+        return cv2.addWeighted(gray, 1.0 + amount, blurred, -amount, 0)
 
     def _try_reuse_homography(
         self, result: TrackFrame, frame: np.ndarray,
@@ -232,15 +267,16 @@ class ArucoTracker:
 
         cx, cy = result.aim_px
         colour = (0, 255, 0) if result.quality > 0.5 else (0, 165, 255)
-        cv2.line(result.frame_display,
-                 (cx - 20, cy), (cx + 20, cy), colour, 2)
-        cv2.line(result.frame_display,
-                 (cx, cy - 20), (cx, cy + 20), colour, 2)
-        cv2.circle(result.frame_display, (cx, cy), 8, colour, 1)
-
         text = f"Aim: ({result.aim_mm[0]:+.1f}, {result.aim_mm[1]:+.1f}) mm"
-        cv2.putText(result.frame_display, text, (10, h - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        for canvas in (result.frame_display, result.processed):
+            if canvas is None:
+                continue
+            cv2.line(canvas, (cx - 20, cy), (cx + 20, cy), colour, 2)
+            cv2.line(canvas, (cx, cy - 20), (cx, cy + 20), colour, 2)
+            cv2.circle(canvas, (cx, cy), 8, colour, 1)
+            cv2.putText(canvas, text, (10, h - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
 
 def _nearest_mark(
