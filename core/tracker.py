@@ -99,7 +99,7 @@ class ArucoTracker:
         margin_mm: Distance from sheet edge to marker corner (mm).
         use_clahe: Apply CLAHE contrast enhancement before detection.
         clahe_clip: CLAHE clip limit (higher is more aggressive).
-        marker_count: Number of markers on the sheet (``4``, ``6`` or ``8``).
+        marker_count: ``"Auto"`` accepts all known positions, or select 4, 6, 8.
         brightness_target: Mean brightness target for software gain
             normalisation, used before CLAHE.
     """
@@ -116,7 +116,7 @@ class ArucoTracker:
         margin_mm: float = 8.0,
         use_clahe: bool = True,
         clahe_clip: float = 4.0,
-        marker_count: int = 4,
+        marker_count: int | str = "Auto",
         brightness_target: float = 128.0,
         sharpen: float = 0.0,
     ):
@@ -153,7 +153,11 @@ class ArucoTracker:
 
         all_corners = _build_board_corners(
             board_width_mm, board_height_mm, marker_size_mm, margin_mm)
-        active = _MARKER_LAYOUTS.get(marker_count, _MARKER_LAYOUTS[4])
+        self._auto_markers = str(marker_count).lower() == "auto"
+        count = 8 if self._auto_markers else int(marker_count)
+        active = _MARKER_LAYOUTS.get(count, _MARKER_LAYOUTS[4])
+        # Auto learns a lower bound; occlusion must not shrink the estimate.
+        self._expected_marker_count = 4 if self._auto_markers else len(active)
         self._board_corners = {k: all_corners[k] for k in active}
 
         self.target_centre_mm = np.array(
@@ -209,7 +213,11 @@ class ArucoTracker:
         self._last_homography = H
         self._homography_age = 0
         result.homography = H
-        result.quality = min(1.0, len(img_pts) / len(self._board_corners))
+        if self._auto_markers:
+            known_ids = [int(mid) for mid in ids_flat if mid in self._board_corners]
+            inferred = 8 if max(known_ids) >= 6 else 6 if max(known_ids) >= 4 else 4
+            self._expected_marker_count = max(self._expected_marker_count, inferred)
+        result.quality = min(1.0, len(img_pts) / self._expected_marker_count)
         self._compute_aim(result, frame)
         return result
 

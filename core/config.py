@@ -17,7 +17,7 @@ from typing import Iterable, Optional, Tuple
 
 from core.paths import config_path, resource_path, user_targets_dir
 
-VERSION = "1.1.0"
+VERSION = "1.2"
 
 CONFIG_FILE = str(config_path())
 
@@ -250,7 +250,7 @@ DEFAULT_CONFIG = {
 
     # ArUco tracking
     "aruco_dict": "DICT_4X4_50",
-    "aruco_marker_count": 4,
+    "aruco_marker_count": "Auto",  # Or 4, 6, 8 for a fixed printed layout.
     "camera_pixel_format": "Auto",
     "aruco_marker_mm": 40.0,
     "aruco_margin_mm": 8.0,

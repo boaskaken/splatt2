@@ -6,6 +6,12 @@ No special hardware required — just a webcam, a microphone, a printer, and a c
 
 ---
 
+## Version 1.2 — Community integration
+
+This community integration version combines all community pull requests that were open in `Nonkeydonk/splatt2` when the `v1.2` branch was assembled: #2, #3, #4, #5, #6, #7, #8 and #11. It includes voice feedback, cross-platform packaging, UI and performance improvements, trace playback, camera zoom and tracker view, marker-sheet DPI metadata, the NSRA 25-yard prone rifle target, and configurable target colours and ring-score labels.
+
+Merge conflicts have been resolved to combine these contributions. This branch also includes Auto marker selection and a voice-feedback checkbox adjustment. This is a community integration version, not an official upstream release; pull requests opened later are not automatically included.
+
 ## How It Works
 
 1. Print the **ArUco marker sheet** from within the app and stick it behind your target.
@@ -149,7 +155,8 @@ Below the feed: a **◎ Focus assist** toggle (for manual-focus lenses) that rev
 
 The **🎛 Cam Props** button (next to Settings) opens the Windows native camera properties dialog where you can adjust brightness, contrast, saturation, sharpness, and exposure directly via the driver. Increasing contrast and sharpness in this dialog significantly improves ArUco detection.
 
-The tracking quality bar shows what fraction of configured markers are visible:
+The tracking quality bar shows what fraction of configured markers are visible. In Auto mode, the total is estimated from the highest recognised ID: 0–3 imply at least 4 markers, 4–5 at least 6, and 6–7 imply 8. The estimate only increases until the tracker restarts, so temporary occlusion does not reduce it. Hidden markers can make the initial estimate too low; select a fixed count for an exact denominator. IDs identify positions, not the total count. Sheet dimensions, marker size, margin and dictionary must still match the print.
+
 - **Green (>60%)** — all or most markers detected, full accuracy
 - **Yellow (30–60%)** — partial detection, homography being reused
 - **Red (<30%)** — tracking lost, shots will be rejected
@@ -195,7 +202,7 @@ Left to right: Pause, Zero, Fine Zero, decimal scoring toggle (DEC), camera rota
 | CLAHE | Adaptive contrast enhancement — improves tracking under uneven lighting (recommended ON) |
 | CLAHE clip limit | Aggressiveness of contrast enhancement (2=mild, 4=balanced, 8=aggressive, 12=extreme). Quick buttons in Settings. |
 | Brightness target | Software gain normalisation target (0–255). Frame brightness is scaled to this value before CLAHE, compensating automatically for lighting changes. Default 128. |
-| Marker count | 4 / 6 / 8 ArUco markers. More markers improve robustness when one is briefly occluded. Must match the printed sheet. |
+| Marker count | Auto (default) / 4 / 6 / 8. Auto uses all recognised positions on supported sheets. Fixed counts must match the printed sheet. Printing still lets you choose 4, 6 or 8. |
 | Pixel format | Auto / MJPEG / YUY2. MJPEG prevents fps throttling on static scenes on some cameras. |
 | Smoothing | EMA (fast) or Savitzky-Golay (smoother shape) — affects trace appearance only, not shot position |
 
@@ -356,7 +363,7 @@ Each `.csv` has a companion `.json` file with full trace data for the Series Rev
 - Use 🎛 Cam Props to boost contrast and sharpness in the camera driver — this often helps significantly
 - Make sure the printed sheet is flat and undamaged
 - Verify the ArUco dictionary in Settings matches the one used to print the sheet
-- Verify the marker count in Settings matches the number of markers on the sheet
+- Select Auto for marker count in Settings, or match the number printed on the sheet
 
 **Shots not registering / "SHOT REJECTED"**
 - "No tracking" — camera can't see markers when the shot fired; reposition

@@ -125,7 +125,7 @@ class SplattApp:
             margin_mm=float(self.cfg.get("aruco_margin_mm", 8.0)),
             use_clahe=bool(self.cfg.get("use_clahe", True)),
             clahe_clip=float(self.cfg.get("clahe_clip", 4.0)),
-            marker_count=int(self.cfg.get("aruco_marker_count", 4)),
+            marker_count=self.cfg.get("aruco_marker_count", "Auto"),
             brightness_target=float(self.cfg.get("brightness_target", 128.0)),
             sharpen=float(self.cfg.get("sharpen", 0.0)),
         )
@@ -1722,7 +1722,7 @@ class SplattApp:
                 margin_mm=float(self.cfg.get("aruco_margin_mm", 8.0)),
                 use_clahe=bool(self.cfg.get("use_clahe", True)),
                 clahe_clip=float(self.cfg.get("clahe_clip", 4.0)),
-                marker_count=int(self.cfg.get("aruco_marker_count", 4)),
+                marker_count=self.cfg.get("aruco_marker_count", "Auto"),
                 brightness_target=float(
                     self.cfg.get("brightness_target", 128.0)),
                 sharpen=float(self.cfg.get("sharpen", 0.0)),
@@ -2278,12 +2278,13 @@ class MarkerSheetDialog(tk.Toplevel):
         r8 = tk.Frame(parent, bg=BG_DARK); r8.pack(fill="x", **pad)
         tk.Label(r8, text="Marker count:", bg=BG_DARK, fg=TEXT_SEC,
                  font=FB, width=22, anchor="w").pack(side="left")
+        sheet_count = str(self.cfg.get("aruco_marker_count", "Auto"))
         self._sheet_marker_count = tk.StringVar(
-            value=str(self.cfg.get("aruco_marker_count", 4)))
+            value=sheet_count if sheet_count in ("4", "6", "8") else "4")
         ttk.Combobox(r8, textvariable=self._sheet_marker_count,
                      values=["4", "6", "8"], state="readonly",
                      width=6, font=FL).pack(side="left")
-        tk.Label(r8, text="  must match Settings → Camera → Marker count",
+        tk.Label(r8, text="  use Auto in Camera settings, or match this count",
                  bg=BG_DARK, fg=TEXT_DIM, font=FL).pack(side="left", padx=4)
 
         r3 = tk.Frame(parent, bg=BG_DARK); r3.pack(fill="x", **pad)
@@ -2991,11 +2992,11 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(r_mc, text="Marker count:", bg=BG_DARK, fg=TEXT_SEC,
                  font=FB, width=24, anchor="w").pack(side="left")
         self._v_aruco_marker_count = tk.StringVar(
-            value=str(self.cfg.get("aruco_marker_count", 4)))
+            value=str(self.cfg.get("aruco_marker_count", "Auto")))
         ttk.Combobox(r_mc, textvariable=self._v_aruco_marker_count,
-                     values=["4", "6", "8"], state="readonly",
+                     values=["Auto", "4", "6", "8"], state="readonly",
                      width=6, font=FL).pack(side="left")
-        tk.Label(r_mc, text="  4=corners only  6=+left/right midpoints  8=+top/bottom",
+        tk.Label(r_mc, text="  Auto uses all recognised marker positions; or choose 4 / 6 / 8",
                  bg=BG_DARK, fg=TEXT_DIM, font=FL).pack(side="left", padx=6)
 
         # Pixel format (MJPEG prevents static-scene fps throttling)
@@ -3379,9 +3380,13 @@ class SettingsDialog(tk.Toplevel):
         tk.Frame(tab, bg=BG_DARK, height=16).pack()
 
         self._section(tab, "Voice Feedback")
-        self._voice_enabled = tk.BooleanVar(value=self.cfg.get("voice_enabled", False))
+        self._voice_enabled = tk.BooleanVar(
+            master=self, value=self.cfg.get("voice_enabled", True))
         self._row(tab, "Voice enabled",
-                  lambda p: ttk.Checkbutton(p, variable=self._voice_enabled))
+                  lambda p: tk.Checkbutton(
+                      p, variable=self._voice_enabled, onvalue=True, offvalue=False,
+                      bg=BG_DARK, selectcolor=BG_CARD,
+                      activebackground=BG_DARK))
 
     def _collect(self):
         for attr in dir(self):
