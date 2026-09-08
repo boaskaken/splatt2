@@ -34,22 +34,48 @@ Changing the pellet calibre in Settings instantly shifts all scoring bands — o
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit)
-- **Python 3.9+** — download from https://python.org — tick **"Add Python to PATH"** during installation
+- Windows 10/11, macOS 12+, or a recent 64-bit Linux desktop
 - A webcam (USB recommended for barrel-mounting; built-in works for testing)
 - A microphone (built-in laptop mic is fine for dry-fire; closer to the action is better for live fire)
+- **Python 3.9+** is only needed when running from source — pre-built binaries bundle their own runtime
 
 ---
 
-## Quick Start
+## Quick Start (pre-built binary)
 
-1. Install Python from https://python.org (tick "Add Python to PATH")
-2. Download or clone this repository
-3. Double-click **`RUN.bat`**
+Download the latest release for your OS from the [Releases page](../../releases/latest):
 
-That's it. `RUN.bat` automatically installs all Python dependencies (`numpy`, `opencv`, `sounddevice`, `Pillow`, `scipy`) the first time it runs, then launches Splatt2. On subsequent runs it checks for updates to dependencies and starts immediately.
+- `splatt2-windows-x64.zip`
+- `splatt2-macos-arm64.zip` (Apple Silicon) or `splatt2-macos-x64.zip` (Intel)
+- `splatt2-linux-x64.zip`
 
-> **To share with someone else:** give them the folder and tell them to install Python and double-click `RUN.bat`. No compilation, no installers, no antivirus drama.
+Unzip anywhere and launch:
+
+- **Windows** — run `splatt2.exe`
+- **macOS** — open `Splatt2.app` (right-click → Open the first time so Gatekeeper allows the unsigned bundle)
+- **Linux** — `chmod +x splatt2 && ./splatt2`
+
+User config and shooting sessions are saved to your OS-native app data folder:
+
+| OS      | Location                                               |
+| ------- | ------------------------------------------------------ |
+| Windows | `%APPDATA%\Splatt2`                                    |
+| macOS   | `~/Library/Application Support/Splatt2`                |
+| Linux   | `~/.local/share/Splatt2` (or `$XDG_DATA_HOME/Splatt2`) |
+
+Override with `SPLATT2_USER_DIR=/some/path` for testing or portable installs.
+
+---
+
+## Quick Start (run from source)
+
+1. Install Python 3.9+ from https://python.org (Windows: tick **"Add Python to PATH"**)
+2. Clone or download this repository
+3. Launch:
+   - **Windows** — double-click `RUN.bat`
+   - **macOS / Linux** — `pip install -r requirements.txt && python main.py`
+
+`RUN.bat` installs the Python deps (`numpy`, `opencv`, `sounddevice`, `Pillow`, `scipy`) on first run, then starts the app.
 
 ---
 
@@ -134,7 +160,7 @@ The tracking quality bar shows what fraction of configured markers are visible:
   - Green = hold (on target, early)
   - Yellow = pre-shot window (~1s before shot)
   - Red = final window (~0.2s before shot)
-- **Shot holes** — filled circles scaled to actual pellet diameter, numbered by shot index
+- **Shot holes** — filled circles scaled to actual pellet diameter, labelled with their score for the current series
 - **ACP diamond** — Aim Centre Point, the mean hold position over the final fraction of each trace
 - **MPI cross** — Mean Point of Impact across all shots in the series
 - **Group circle** — smallest circle enclosing all shots (Extreme Spread)
@@ -191,14 +217,49 @@ Left to right: Pause, Zero, Fine Zero, decimal scoring toggle (DEC), camera rota
 | Shot circle dia | Visual size of the shot hole on screen (cosmetic only) |
 | Zero offset | Current persistent zero — reset here if needed |
 | Ignore misses | Discard score-0 shots from statistics (useful in competition training) |
-| Inner-colour rings | Number of innermost rings using the inner fill. `0` uses the outer fill throughout. |
-| Inner colour | Fill for the inner rings. |
-| Outer colour | Fill for the remaining rings. |
-| Inner line colour | Ring outlines and score labels on the inner fill. |
-| Outer line colour | Ring outlines and score labels on the outer fill. |
+
+#### Ring Scores — Settings → Target
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Number labels from inside | 5 | Number of ring entries to label, counting from the centre outward. `0` hides all numbers. |
+| Show scores: top | False | Show numbers above the centre. |
+| Show scores: right | True | Show numbers to the right. |
+| Show scores: bottom | False | Show numbers below the centre. |
+| Show scores: left | False | Show numbers to the left. |
+
+Directions are independent. Counts include a separate inner-10 CSV entry,
+and are capped at the available ring count. Multi-mark targets display
+numbers on the first mark only. Small rings can have overlapping labels
+at low zoom, especially with multiple directions enabled.
 
 ### Colours
-All trace and shot colours are fully configurable. Changes apply on **Apply** without restarting.
+
+Open **Settings → Colours** to customise trace, shot and target colours.
+Click **Pick…** to open the colour picker, or enter a hex colour.
+Click **Apply** to save changes and refresh the main target.
+
+#### Target Appearance
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Inner-colour rings | 5 | Number of innermost ring entries using the inner fill. `0` uses the outer fill throughout. |
+| Inner colour | `#0f0f0f` | Inner fill colour. |
+| Outer colour | `#fbe2a9` | Outer fill colour. |
+| Inner line colour | `#ffffff` | Outlines and score labels on the inner fill. |
+| Outer line colour | `#000000` | Outlines and score labels on the outer fill. |
+
+The manual inner-ring count controls the digital target's fill boundary;
+`bull_dia_mm` does not override it. Rings and labels render at 3× resolution
+before downsampling. Appearance settings do not change scoring geometry
+or printed marker-sheet colours.
+
+Defaults live in `core/config.py`; saved settings in the user data directory
+override them. On Windows this is `%APPDATA%\Splatt2\splatt2_config.json`.
+Set `SPLATT2_USER_DIR` to use a different directory. Legacy config files
+beside `main.py` are copied on first use when no new config exists; old
+black/paper keys are migrated to inner/outer names when loaded. Explicit
+new names take priority.
 
 ### Advanced
 | Setting | Description |
@@ -257,9 +318,11 @@ Open **Print Marker Sheet → Target Creator** tab to create or edit targets wit
 
 ## Session Files
 
-Sessions are saved in the `sessions/` folder (next to the app, or as configured in Settings). Each day of shooting creates a subfolder named `YYYY-MM-DD/`. Within each day, each series is a separate file named `HH-MM-SS_name_series1.csv`.
+Series recordings are saved to the `sessions/` folder inside your user data directory (see *Quick Start (pre-built binary)* for the per-OS path), or in a custom location configured in Settings → Session. Each day of shooting creates a subfolder named `YYYY-MM-DD/`. Within each day, each series is a separate file named `HH-MM-SS_name_series1.csv`.
 
 Each `.csv` has a companion `.json` file with full trace data for the Series Review window.
+
+> Splatt2 versions before this one stored the config and `sessions/` folder next to `main.py`. On first launch of a newer build, the config is migrated into the per-user app data directory automatically. The original is left in place.
 
 ---
 
@@ -318,13 +381,19 @@ Each `.csv` has a companion `.json` file with full trace data for the Series Rev
 ```
 splatt2/
 ├── main.py                  Entry point with crash logging
-├── RUN.bat                  Install dependencies & launch (double-click to run)
-├── requirements.txt         Python dependencies
-├── targets/                 Target definition CSV files — add your own here
+├── RUN.bat                  Install dependencies & launch (Windows dev flow)
+├── requirements.txt         Runtime Python dependencies
+├── requirements-build.txt   Build-time dependencies (PyInstaller)
+├── targets/                 Bundled target definition CSVs (read-only seeds)
 │   ├── 10m_air_rifle.csv
 │   ├── 10m_air_pistol.csv
 │   └── 6yd_air_rifle.csv
+├── build/
+│   ├── splatt2.spec         PyInstaller spec
+│   ├── build.py             Cross-platform build script
+│   └── README.md            Build instructions
 ├── core/
+│   ├── paths.py             Cross-platform resource and user-data paths
 │   ├── config.py            Settings management and target CSV loader
 │   ├── tracker.py           ArUco detection, homography, scoring geometry
 │   ├── audio.py             Shot sound detection (transient detection)
@@ -332,9 +401,38 @@ splatt2/
 │   ├── target_renderer.py   OpenCV target canvas drawing
 │   ├── marker_sheet.py      Printable ArUco sheet generator
 │   └── smoother.py          Aim-point smoothing (EMA / Savitzky-Golay)
-└── ui/
-    └── app.py               Main tkinter UI
+├── ui/
+│   └── app.py               Main tkinter UI
+└── .github/workflows/
+    ├── ci.yml               Syntax check on push and PR
+    └── release.yml          Cross-platform PyInstaller builds on tag
 ```
+
+---
+
+## Building from Source
+
+To produce a standalone bundle for your platform:
+
+```
+pip install -r requirements.txt -r requirements-build.txt
+python build/build.py --clean
+```
+
+Output lands in `dist/splatt2-<os>-<arch>/`. See [`build/README.md`](build/README.md) for per-OS notes.
+
+Pre-built binaries are produced automatically by GitHub Actions on every tag — see [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+### On-demand builds via GitHub Actions
+
+You can trigger the release workflow manually without pushing a tag:
+
+1. Go to **Actions → Release → Run workflow**
+2. Pick the branch
+3. Leave **Create a GitHub Release** unticked to just produce downloadable artifacts attached to the workflow run (kept for 30 days)
+4. Tick it and supply a tag (e.g. `v1.2.0-rc1`) to publish a pre-release with the zips attached
+
+Manual-dispatch releases are flagged as pre-releases so they don't override the latest stable.
 
 ---
 
