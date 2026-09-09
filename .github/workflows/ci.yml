@@ -1,18 +1,50 @@
 name: CI
-
 on:
   push:
-    branches: [main]
+    branches: [main, v1.3]
   pull_request:
-
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  lint:
-    name: Syntax check
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Compile all Python sources
-        run: python -m compileall -q core ui main.py build
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0 libportaudio2 espeak-ng
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q core ui main.py build tests
+      - name: Regression tests
+        env:
+          SPLATT2_REQUIRE_GUI: ${{ runner.os == 'Windows' && '1' || '0' }}
+        run: python -m unittest discover -s tests -v
+      - name: Build Windows application
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install -r requirements-build.txt
+          python build/build.py
+      - name: Smoke-test packaged Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $app = (Resolve-Path 'dist/splatt2-windows-x64/splatt2.exe').Path
+          $process = Start-Process -FilePath $app -ArgumentList '--self-test smoke.json --gui' -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Smoke test timed out' }
+          if ($process.ExitCode -ne 0) { throw 'Smoke test failed' }
+          $report = Get-Content smoke.json -Raw | ConvertFrom-Json
+          if (-not $report.ok) { throw 'Smoke report failed' }
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: splatt2-community-1.3-windows
+          path: |
+            dist/splatt2-windows-x64/
+            smoke.json

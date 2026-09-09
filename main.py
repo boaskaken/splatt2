@@ -60,7 +60,10 @@ def _show_crash_dialog(exc_text: str, log_path) -> None:
         return
 
     try:
+        from ui.icons import configure_taskbar, set_window_icon
+        configure_taskbar()
         root = tk.Tk()
+        set_window_icon(root)
         root.withdraw()
         message = f"Splatt2 crashed unexpectedly.\n\n{exc_text[:400]}\n\n"
         if log_path:
@@ -75,12 +78,18 @@ def _show_crash_dialog(exc_text: str, log_path) -> None:
 
 
 def main() -> None:
+    from core.diagnostics import setup_logging
+    setup_logging()
     print("Starting Splatt2...")
     from ui.app import SplattApp
     SplattApp().run()
 
 
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        from core.selftest import run
+        index = sys.argv.index("--self-test")
+        sys.exit(run(sys.argv[index + 1], gui="--gui" in sys.argv))
     try:
         main()
     except Exception:

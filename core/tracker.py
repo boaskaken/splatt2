@@ -38,6 +38,11 @@ class TrackFrame:
     aim_mm: Optional[Tuple[float, float]] = None
     aim_px: Optional[Tuple[int, int]] = None
     markers_found: int = 0
+    markers_expected: int = 4
+    count_is_estimate: bool = False
+    stale: bool = False
+    reprojection_error_mm: float = 0.0
+    board_coverage: float = 0.0
     frame_display: Optional[np.ndarray] = None
     # Post-preprocessing diagnostic frame (BGR) showing what the ArUco
     # detector receives, with marker boxes and aim crosshair drawn on
@@ -165,10 +170,19 @@ class ArucoTracker:
 
         self._last_homography: Optional[np.ndarray] = None
         self._homography_age: int = 0
+        self._last_quality = 0.0
+
+    def reset(self):
+        """Forget stale geometry and the Auto lower bound when opening a sheet."""
+        self._expected_marker_count = 4 if self._auto_markers else len(self._board_corners)
+        self._last_homography = None
+        self._homography_age = 0
+        self._last_quality = 0.0
 
     def process_frame(self, frame: np.ndarray) -> TrackFrame:
         """Run detection on one BGR frame and return the resulting state."""
-        result = TrackFrame()
+        result = TrackFrame(markers_expected=self._expected_marker_count,
+                            count_is_estimate=self._auto_markers)
         result.frame_display = frame.copy()
 
         gray = self._preprocess(frame)
@@ -184,14 +198,18 @@ class ArucoTracker:
             return result
 
         ids_flat = ids.flatten()
-        result.markers_found = len(ids_flat)
+        # Ignore unknown and ambiguous duplicate IDs for geometry and count.
+        unique_ids, counts = np.unique(ids_flat, return_counts=True)
+        accepted = {int(mid) for mid, count in zip(unique_ids, counts)
+                    if count == 1 and mid in self._board_corners}
+        result.markers_found = len(accepted)
         cv2.aruco.drawDetectedMarkers(result.frame_display, corners, ids)
         cv2.aruco.drawDetectedMarkers(result.processed, corners, ids)
 
         img_pts: List[np.ndarray] = []
         brd_pts: List[np.ndarray] = []
         for i, mid in enumerate(ids_flat):
-            if mid in self._board_corners:
+            if mid in accepted:
                 img_pts.append(corners[i][0])
                 brd_pts.append(self._board_corners[mid])
 
@@ -200,12 +218,12 @@ class ArucoTracker:
             self._try_reuse_homography(result, frame)
             return result
 
-        H, _ = cv2.findHomography(
+        H, mask = cv2.findHomography(
             np.concatenate(img_pts, axis=0),
             np.concatenate(brd_pts, axis=0),
             cv2.RANSAC, 5.0,
         )
-        if H is None:
+        if H is None or not np.isfinite(H).all():
             self._homography_age += 1
             self._try_reuse_homography(result, frame)
             return result
@@ -214,10 +232,30 @@ class ArucoTracker:
         self._homography_age = 0
         result.homography = H
         if self._auto_markers:
-            known_ids = [int(mid) for mid in ids_flat if mid in self._board_corners]
+            known_ids = list(accepted)
             inferred = 8 if max(known_ids) >= 6 else 6 if max(known_ids) >= 4 else 4
             self._expected_marker_count = max(self._expected_marker_count, inferred)
-        result.quality = min(1.0, len(img_pts) / self._expected_marker_count)
+        result.markers_expected = self._expected_marker_count
+        image_points = np.concatenate(img_pts, axis=0)
+        board_points = np.concatenate(brd_pts, axis=0)
+        inliers = mask.ravel().astype(bool) if mask is not None else np.ones(len(board_points), dtype=bool)
+        if not inliers.any():
+            self._last_homography = None
+            result.homography = None
+            return result
+        projected = cv2.perspectiveTransform(image_points.reshape(-1, 1, 2), H).reshape(-1, 2)
+        error = float(np.sqrt(np.mean(np.sum((projected[inliers] - board_points[inliers]) ** 2, axis=1))))
+        hull = cv2.convexHull(board_points[inliers].astype(np.float32))
+        coverage = float(cv2.contourArea(hull)) / (self.board_width_mm * self.board_height_mm)
+        result.reprojection_error_mm = error
+        result.board_coverage = coverage
+        visibility = len(img_pts) / self._expected_marker_count
+        # A heuristic confidence, not an accuracy guarantee. Widely spaced
+        # corners constrain aim better than a tight cluster of marker points.
+        spread = min(1.0, (max(0.0, coverage) / 0.75) ** 0.5)
+        fit = float(np.mean(inliers)) / (1.0 + error / 2.0)
+        result.quality = max(0.0, min(1.0, visibility * spread * fit))
+        self._last_quality = result.quality
         self._compute_aim(result, frame)
         return result
 
@@ -253,7 +291,8 @@ class ArucoTracker:
         if self._homography_age > self.MAX_HOMOGRAPHY_AGE:
             return
         result.homography = self._last_homography
-        result.quality = max(0.1, 0.5 - self._homography_age * 0.1)
+        result.stale = True
+        result.quality = self._last_quality * (1 - self._homography_age / (self.MAX_HOMOGRAPHY_AGE + 1))
         self._compute_aim(result, frame)
 
     def _compute_aim(

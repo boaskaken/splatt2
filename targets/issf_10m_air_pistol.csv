@@ -1,6 +1,6 @@
-# Splatt2 Target Definition — issf 10m pistol correct
-key,issf_10m_pistol_coorect
-name,issf 10m pistol correct
+# Splatt2 Target Definition — issf_10m_air_pistol
+key,issf_10m_air_pistol
+name,issf 10m air pistol
 gauging,outward
 calibre_mm,4.5
 reference_dist_m,10.0

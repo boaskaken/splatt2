@@ -10,6 +10,7 @@ accepting genuine clicks.
 from __future__ import annotations
 
 import collections
+import logging
 import threading
 import time
 from typing import Callable, Deque, Optional
@@ -19,7 +20,7 @@ import numpy as np
 try:
     import sounddevice as sd
     SD_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     SD_AVAILABLE = False
 
 
@@ -53,6 +54,7 @@ class AudioDetector:
         chunk_size: int = 512,
         device_index: Optional[int] = None,
         on_shot: Optional[Callable[[float], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
     ):
         self.threshold = threshold
         self.transient_ratio = transient_ratio
@@ -61,7 +63,9 @@ class AudioDetector:
         self.chunk_size = chunk_size
         self.device_index = device_index
         self.on_shot = on_shot
+        self.on_error = on_error or (lambda message: None)
 
+        self.last_error = None
         self._stream = None
         self._last_trigger_time: float = 0.0
         self._running = False
@@ -83,10 +87,12 @@ class AudioDetector:
     def start(self) -> None:
         """Open the input stream and begin processing audio."""
         if not SD_AVAILABLE:
-            print("[Audio] sounddevice not available.")
+            self.last_error = "Microphone unavailable: sounddevice/PortAudio could not load."
+            logging.getLogger(__name__).error(self.last_error)
             return
         if self._running:
             return
+        self.last_error = None
         self._running = True
         self._paused = False
         try:
@@ -96,11 +102,20 @@ class AudioDetector:
                 channels=1,
                 blocksize=self.chunk_size,
                 callback=self._audio_callback,
+                finished_callback=self._stream_finished,
             )
             self._stream.start()
         except Exception as e:
-            print(f"[Audio] Stream error: {e}")
+            self.last_error = f"Microphone could not start: {e}. Check device and Windows microphone permissions."
+            logging.getLogger(__name__).exception("Microphone start failed")
+            self.stop()
+
+    def _stream_finished(self):
+        if self._running:
             self._running = False
+            self.last_error = "Microphone stopped unexpectedly; check the connection and restart the camera."
+            logging.getLogger(__name__).error(self.last_error)
+            self.on_error(self.last_error)
 
     def stop(self) -> None:
         """Stop and close the input stream."""

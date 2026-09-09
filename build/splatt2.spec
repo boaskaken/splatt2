@@ -12,7 +12,8 @@ ROOT = Path(SPECPATH).parent
 APP_NAME = "splatt2"
 ENTRY = str(ROOT / "main.py")
 
-datas = [(str(ROOT / "targets"), "targets")]
+datas = [(str(ROOT / "targets"), "targets"),
+         (str(ROOT / "assets"), "assets")]
 binaries = []
 hiddenimports = [
     # Pillow's tkinter integration is loaded dynamically.
@@ -52,7 +53,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 
-_icon_dir = ROOT / "build" / "icons"
+_icon_dir = ROOT / "assets"
 if sys.platform.startswith("win"):
     _icon = _icon_dir / "splatt2.ico"
 elif sys.platform == "darwin":

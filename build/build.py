@@ -70,6 +70,14 @@ def _rename_output(target_name: str) -> Path:
 
 
 def _build(clean: bool) -> int:
+    # PyInstaller otherwise silently excludes tkinter when Tcl cannot load.
+    try:
+        import tkinter
+        tkinter.Tcl()
+    except Exception as exc:
+        print(f"[build] Tcl/Tk is unavailable: {exc}")
+        print("Use a full Python 3.12 installation with Tcl/Tk, or the Windows CI build.")
+        return 1
     if clean:
         for p in (DIST, WORK):
             if p.exists():

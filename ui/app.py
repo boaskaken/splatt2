@@ -8,6 +8,7 @@ windows live alongside it: :class:`MarkerSheetDialog`,
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import queue
@@ -24,7 +25,7 @@ from PIL import Image, ImageTk
 from core.audio import AudioDetector
 from core.config import (TARGETS, VERSION, _load_target_csv, _targets_dir,
                           _user_targets_dir, load_all_targets, load_config,
-                          save_config)
+                          save_config, validate_config, CONFIG_WARNINGS, DEFAULT_CONFIG)
 from core.marker_sheet import (A4_W_MM, AIMING_MARKS, _get_aiming_marks,
                                 generate_marker_sheet)
 from core.session import (APPROACH_ZONE_FACTOR, Session, Shot, ShotTrace,
@@ -45,7 +46,11 @@ from ui.theme import (
     set_button_variant as _set_variant,
 )
 
-import pyttsx3
+from core.voice import VoiceFeedback, shot_message
+from core.paths import user_data_dir
+from ui.icons import configure_taskbar, set_window_icon
+
+log = logging.getLogger(__name__)
 
 
 def _default_save_dir() -> str:
@@ -110,6 +115,11 @@ def _compute_scoring_radius_mm(target_cfg: dict, cfg: dict) -> float:
 
 class SplattApp:
     def __init__(self):
+        self._notifications = queue.Queue()
+        self._camera_results = queue.Queue()
+        self._camera_opening = False
+        self._closing = False
+        self.voice = VoiceFeedback(on_error=self._notifications.put)
         self.cfg, self._first_run = load_config()
         self.target_cfg = TARGETS[self.cfg["target_key"]]
         self.session = Session(
@@ -140,6 +150,7 @@ class SplattApp:
             chunk_size=512,
             device_index=self.cfg.get("audio_device_index"),
             on_shot=self._on_shot_detected,
+            on_error=self._notifications.put,
         )
 
         # Camera and tracking state.
@@ -200,6 +211,7 @@ class SplattApp:
         self._last_shot_fired_time: float = 0.0
         self._last_shot_info = None
         self._current_markers_found: int = 0
+        self._marker_status = "No markers detected"
         self._camera_rotation = int(self.cfg.get("camera_rotation", 0))
         self._fine_zero_mode = False
         self._smoother = make_smoother(
@@ -225,14 +237,20 @@ class SplattApp:
         # native events like dropdown clicks. Camera frame display is
         # driven directly from the worker via ``_request_cam_refresh``.
         self.root.after(100, self._tick_periodic)
+        if CONFIG_WARNINGS:
+            self.root.after(400, lambda: messagebox.showwarning(
+                "Settings restored", "\n".join(CONFIG_WARNINGS), parent=self.root))
         if self._first_run:
             self.root.after(300, self._show_first_run_wizard)
         self._editor_show_trace = tk.BooleanVar(value=True)
         self._editor_show_acp = tk.BooleanVar(value=True)
         self._editor_show_dur = tk.BooleanVar(value=True)
     def _build_window(self):
+        configure_taskbar()
         self.root = tk.Tk()
-        self.root.title(f"SPLATT2 v{VERSION} — Target Shooting Trainer")
+        set_window_icon(self.root)
+        self.root.report_callback_exception = self._ui_exception
+        self.root.title(f"SPLATT2 v{VERSION} Community — Target Shooting Trainer")
         self.root.configure(bg=BG_DARK)
         self.root.minsize(1200, 750)
         self.root.geometry("1440x840")
@@ -246,7 +264,7 @@ class SplattApp:
         top = tk.Frame(self.root, bg=BG_MID, height=46)
         top.pack(fill="x", side="top")
         top.pack_propagate(False)
-        tk.Label(top, text=f"◎  SPLATT2  v{VERSION}", bg=BG_MID, fg=ACCENT,
+        tk.Label(top, text=f"◎  SPLATT2  v{VERSION} Community", bg=BG_MID, fg=ACCENT,
                  font=("Consolas", 15, "bold")).pack(side="left", padx=16, pady=10)
         self._session_lbl = tk.Label(top, text=f"Session: {self.session.name}",
                                      bg=BG_MID, fg=TEXT_SEC, font=FH)
@@ -699,7 +717,10 @@ class SplattApp:
         if self._running:
             self._stop_camera()
             return
+        if self._camera_opening or self._closing:
+            return
 
+        self._camera_opening = True
         self._set_status("Opening camera…", GOLD)
         self._btn_cam.configure(state="disabled")
         idx = self.cfg.get("camera_index", 0)
@@ -707,14 +728,28 @@ class SplattApp:
                          args=(idx,), daemon=True).start()
 
     def _open_camera_in_background(self, idx) -> None:
-        # Wait for any previous camera loop to fully tear down its
-        # device handle before grabbing the next one. Without this,
-        # AVFoundation can hand us a half-released handle that hangs.
-        self._loop_done.wait(timeout=5.0)
-        cap = self._open_capture(idx)
-        self.root.after(0, self._finish_camera_open, idx, cap)
+        cap = None
+        try:
+            if not self._loop_done.wait(timeout=5.0):
+                raise RuntimeError("Previous camera is still closing; try again shortly.")
+            if not self._closing:
+                cap = self._open_capture(idx)
+        except Exception as exc:
+            log.exception("Camera could not open")
+            self._notifications.put(f"Camera could not open: {exc}")
+        if self._closing:
+            if cap is not None:
+                cap.release()
+            return
+        # The Tk timer consumes results; worker threads never touch widgets.
+        self._camera_results.put((idx, cap))
 
     def _finish_camera_open(self, idx, cap) -> None:
+        self._camera_opening = False
+        if self._closing:
+            if cap is not None:
+                cap.release()
+            return
         self._btn_cam.configure(state="normal")
         if cap is None:
             self._set_status("READY", TEXT_SEC)
@@ -724,10 +759,19 @@ class SplattApp:
             return
 
         target_fps = int(self.cfg.get("video_fps", 30))
-        self._configure_capture(cap, target_fps)
-        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        try:
+            self._configure_capture(cap, target_fps)
+            actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        except Exception as exc:
+            cap.release()
+            log.exception("Camera configuration failed")
+            self._notifications.put(f"Camera configuration failed: {exc}")
+            return
         self._camera_fps = actual_fps if actual_fps > 0 else target_fps
 
+        self.tracker.reset()
+        self._smoother.reset()
+        self._current_aim_mm = None
         self._cap = cap
         self._running = True
         self._loop_done.clear()
@@ -735,6 +779,8 @@ class SplattApp:
         _set_variant(self._btn_cam, "danger")
         self._set_status("LIVE", ACCENT)
         self.audio.start()
+        if self.audio.last_error:
+            self._notifications.put(self.audio.last_error)
         threading.Thread(target=self._camera_loop,
                          args=(cap,), daemon=True).start()
 
@@ -749,8 +795,12 @@ class SplattApp:
         cap = cv2.VideoCapture(idx, _camera_backend())
         if cap.isOpened():
             return cap
+        cap.release()
         cap = cv2.VideoCapture(idx)
-        return cap if cap.isOpened() else None
+        if cap.isOpened():
+            return cap
+        cap.release()
+        return None
 
     def _configure_capture(self, cap, target_fps: int) -> None:
         """Apply resolution, FPS, pixel format and buffer settings."""
@@ -814,15 +864,19 @@ class SplattApp:
         detect_w = int(self.cfg.get("detection_max_width", 640))
         detect_h = int(self.cfg.get("detection_max_height", 480))
         fps = _FpsCounter()
+        last_frame_time = time.monotonic()
 
         try:
             while self._running:
                 if not cap.isOpened():
-                    break
+                    raise RuntimeError("Camera disconnected; reconnect it and restart the camera.")
                 ret, frame = cap.read()
                 if not ret:
+                    if time.monotonic() - last_frame_time > 3:
+                        raise RuntimeError("Camera stopped delivering frames; reconnect it and restart the camera.")
                     time.sleep(0.005)
                     continue
+                last_frame_time = time.monotonic()
 
                 if self.cfg.get("flip_image"):
                     frame = cv2.flip(frame, self.cfg.get("flip_mode", -1))
@@ -839,9 +893,17 @@ class SplattApp:
                 result = self.tracker.process_frame(small)
                 self._tracking_quality = result.quality
                 self._current_markers_found = result.markers_found
+                total = f"at least {result.markers_expected}" if result.count_is_estimate else str(result.markers_expected)
+                self._marker_status = f"{result.markers_found} visible / {total} expected"
+                if result.stale:
+                    self._marker_status += " (last position)"
 
-                if result.aim_mm is not None and not self._paused:
+                if result.aim_mm is not None and result.quality >= 0.25 and not self._paused:
                     self._consume_aim(result)
+                else:
+                    self._current_aim_mm = None
+                    self._on_target_status = False
+                    self._in_approach_zone = False
 
                 self._live_fps = fps.tick()
                 if self._focus_active:
@@ -857,7 +919,14 @@ class SplattApp:
                     ui_counter = 0
 
                 self._drain_shot_queue()
+        except Exception as exc:
+            log.exception("Camera/tracker loop stopped")
+            self._notifications.put(f"Camera/tracker stopped: {exc}")
         finally:
+            self._running = False
+            self._tracking_quality = 0.0
+            self._current_aim_mm = None
+            self.audio.stop()
             try:
                 cap.release()
             except Exception:
@@ -1034,20 +1103,18 @@ class SplattApp:
         shot.ring_index = ring
         shot.mark_index = mark_idx
 
-        def _speek():
-            pyttsx3.speak(f"{score:.1f}, {shot.clock_position} o'clock" if self._decimal_scoring else f"{int(score)} at {shot.clock_position} o'clock")
-
-        if self.cfg.get("voice_enabled", True):
-            threading.Thread(target=_speek).start()
-
-        if self.session._writer and self.session._writer.is_open:
-            self.session._writer.write_shot(shot)
-
         if score == 0 and self.cfg.get("ignore_misses", False):
             self.session.shots.remove(shot)
             self.root.after(0, lambda: self._set_status(
                 "Miss ignored (score 0)", TEXT_DIM))
             return
+
+        if self.session._writer and self.session._writer.is_open:
+            self.session._writer.write_shot(shot)
+
+        if self.cfg.get("voice_enabled", True):
+            self.voice.speak(shot_message(score, shot.clock_position,
+                self._decimal_scoring, self.cfg.get("voice_mode", "score_direction")), self.cfg)
 
         self._last_shot_fired_time = time.time()
         self._last_shot_info = shot
@@ -1089,6 +1156,11 @@ class SplattApp:
             _set_toggle(self._btn_zero, False, accent_color=GOLD),
             self._set_status("ZEROED", ACCENT)
         ))
+    def _ui_exception(self, exc_type, value, tb):
+        log.error("UI callback failed", exc_info=(exc_type, value, tb))
+        messagebox.showerror("Operation failed",
+            f"{value}\n\nDetails: {user_data_dir() / 'splatt2.log'}", parent=self.root)
+
     def _tick_periodic(self):
         """Slow timer for non-camera UI updates.
 
@@ -1099,6 +1171,25 @@ class SplattApp:
         process native events (dropdown clicks, menus, focus) without
         contention from the GIL-heavy camera worker.
         """
+        try:
+            idx, cap = self._camera_results.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self._finish_camera_open(idx, cap)
+        for _ in range(10):
+            try:
+                notice = self._notifications.get_nowait()
+            except queue.Empty:
+                break
+            log.warning("%s", notice)
+            self._set_status(str(notice), ACCENT2)
+        if not self._running and not self._camera_opening and self._loop_done.is_set():
+            self._btn_cam.configure(text="▶  Start Camera", state="normal")
+        q = int(self._tracking_quality * 100)
+        self._quality_var.set(q)
+        self._tracking_lbl.config(text=f"TRACKING: {q}% · {self._marker_status}",
+            fg=ACCENT if q > 60 else GOLD if q > 30 else ACCENT2)
         self._update_target_display()
         self._refresh_score_widgets_if_dirty()
         if self._running:
@@ -1164,7 +1255,7 @@ class SplattApp:
         q = int(self._tracking_quality * 100)
         self._quality_var.set(q)
         col = ACCENT if q > 60 else (GOLD if q > 30 else ACCENT2)
-        self._tracking_lbl.config(text=f"TRACKING: {q}%", fg=col)
+        self._tracking_lbl.config(text=f"TRACKING: {q}% · {self._marker_status}", fg=col)
         if self._current_aim_mm:
             x, y = self._current_aim_mm
             self._aim_lbl.config(text=f"Aim: ({x:+.1f}, {y:+.1f}) mm")
@@ -1674,7 +1765,7 @@ class SplattApp:
             messagebox.showinfo("Saved", f"Saved to:\n{out}")
 
     def _open_settings(self):
-        SettingsDialog(self.root, self.cfg, self._apply_settings)
+        SettingsDialog(self.root, self.cfg, self._apply_settings, self.voice)
 
     _CAM_RESTART_KEYS = frozenset({
         "video_width", "video_height", "video_fps",
@@ -1683,19 +1774,35 @@ class SplattApp:
     _TRACKER_REBUILD_KEYS = frozenset({
         "aruco_marker_mm", "aruco_margin_mm", "aruco_dict",
         "use_clahe", "clahe_clip", "aruco_marker_count",
-        "brightness_target",
+        "brightness_target", "sharpen",
     })
 
     def _apply_settings(self, new_cfg):
+        audio_changed = any(new_cfg.get(k) != self.cfg.get(k)
+                            for k in ("audio_device_index", "audio_sample_rate"))
         cam_changed = any(new_cfg.get(k) != self.cfg.get(k)
                           for k in self._CAM_RESTART_KEYS)
         tracker_changed = any(new_cfg.get(k) != self.cfg.get(k)
                               for k in self._TRACKER_REBUILD_KEYS)
 
+        errors = validate_config(new_cfg)
+        if errors:
+            raise ValueError("\n".join(f"{k}: {v}" for k, v in errors.items()))
+        save_config(new_cfg)
         self.cfg.update(new_cfg)
-        save_config(self.cfg)
+        if not self.cfg.get("voice_enabled", True):
+            self.voice.clear()
         self.target_cfg = TARGETS[self.cfg["target_key"]]
         self.target_renderer = None
+
+        if audio_changed:
+            self.audio.stop()
+            self.audio.device_index = self.cfg.get("audio_device_index")
+            self.audio.sample_rate = self.cfg.get("audio_sample_rate", 44100)
+            if self._running:
+                self.audio.start()
+                if self.audio.last_error:
+                    self._notifications.put(self.audio.last_error)
 
         # Audio settings apply live.
         self.audio.set_threshold(self.cfg["audio_trigger_threshold"])
@@ -2068,6 +2175,8 @@ class SplattApp:
             getattr(self, action)()
 
     def _on_close(self):
+        self._closing = True
+        self.voice.close()
         self._running = False
         self.audio.stop()
         # Let the camera loop release the capture itself; releasing
@@ -2086,7 +2195,11 @@ class SplattApp:
                 self.session.save_json(fname)
             except Exception as e:
                 print(f"[AutoSave] {e}")
-        save_config(self.cfg)
+        try:
+            save_config(self.cfg)
+        except (OSError, ValueError) as exc:
+            log.exception("Could not save settings on exit")
+            messagebox.showerror("Settings not saved", str(exc), parent=self.root)
         self.root.destroy()
 
     def _show_first_run_wizard(self):
@@ -2795,10 +2908,12 @@ class SettingsDialog(tk.Toplevel):
     """Scrollable settings dialog — each tab has a canvas+scrollbar so nothing
     is ever clipped regardless of screen size or font scaling."""
 
-    def __init__(self, parent, cfg, apply_cb):
+    def __init__(self, parent, cfg, apply_cb, voice=None):
         super().__init__(parent)
         self.cfg      = cfg.copy()
         self.apply_cb = apply_cb
+        self.voice = voice
+        self._voice_results = queue.Queue()
         self.title("Settings — Splatt2")
         self.configure(bg=BG_DARK)
         self.resizable(True, True)
@@ -3387,19 +3502,82 @@ class SettingsDialog(tk.Toplevel):
                       p, variable=self._voice_enabled, onvalue=True, offvalue=False,
                       bg=BG_DARK, selectcolor=BG_CARD,
                       activebackground=BG_DARK))
+        self._row(tab, "Speaking speed (80–350)",
+                  lambda p: self._entry(p, "voice_rate", 6))
+        self._row(tab, "Voice volume (0–1)",
+                  lambda p: self._entry(p, "voice_volume", 6))
+        self._row(tab, "Announcement",
+                  lambda p: self._combo(p, "voice_mode", ["score_direction", "score"]))
+        self._voice_ids = ["", self.cfg.get("voice_id", "")]
+        self._voice_choice = tk.StringVar(master=self, value=(
+            "Saved voice" if self.cfg.get("voice_id") else "System default"))
+        self._voice_combo = self._row(tab, "Voice",
+            lambda p: ttk.Combobox(p, textvariable=self._voice_choice,
+                values=["System default", "Saved voice"], state="readonly", width=28))
+        self._row(tab, "Voice controls", lambda p: _mk_btn(p, "Load voices", self._load_voices))
+        self._row(tab, "Preview", lambda p: _mk_btn(p, "Test voice", self._test_voice))
+        self._note(tab, "Test uses these settings without saving. Voices come from your OS.\n"
+                        "Announcements use English; choose an English voice. Apply saves changes.")
+        self._section(tab, "Diagnostics & Updates")
+        self._note(tab, f"Community version {VERSION}. Runtime log: {user_data_dir() / 'splatt2.log'}")
+        self._row(tab, "Files", lambda p: _mk_btn(p, "Open data folder", self._open_data_folder))
+        self._row(tab, "Community builds", lambda p: _mk_btn(p, "Open releases", self._open_releases))
+
+    def _open_data_folder(self):
+        import webbrowser
+        webbrowser.open(user_data_dir().as_uri())
+
+    def _open_releases(self):
+        import webbrowser
+        webbrowser.open("https://github.com/boaskaken/splatt2/releases")
+
+    def _load_voices(self):
+        if self.voice is None:
+            return
+        self.voice.list_voices(self._voice_results.put)
+        self._status_lbl.config(text="Loading voices…")
+        self.after(100, self._poll_voices)
+
+    def _poll_voices(self):
+        try:
+            voices = self._voice_results.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll_voices)
+            return
+        self._voice_ids = [""] + [item[0] for item in voices]
+        labels = ["System default"] + [f"{name} ({i + 1})" for i, (_, name) in enumerate(voices)]
+        self._voice_combo.configure(values=labels)
+        saved = self.cfg.get("voice_id", "")
+        self._voice_combo.current(self._voice_ids.index(saved) if saved in self._voice_ids else 0)
+        self._status_lbl.config(text=f"{len(voices)} voices available")
+
+    def _test_voice(self):
+        previous = self.cfg.copy()
+        try:
+            self._collect()
+            errors = validate_config(self.cfg)
+            if errors:
+                raise ValueError("\n".join(f"{k}: {v}" for k, v in errors.items()))
+            if self.voice is not None:
+                self.voice.speak(shot_message(9.5, 3, True,
+                    self.cfg.get("voice_mode", "score_direction")), self.cfg)
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror("Invalid settings", str(exc), parent=self)
+        finally:
+            self.cfg = previous
 
     def _collect(self):
         for attr in dir(self):
             if attr.startswith("_v_"):
                 key = attr[3:]
                 val = getattr(self, attr).get()
-                orig = self.cfg.get(key)
+                orig = DEFAULT_CONFIG.get(key, self.cfg.get(key))
                 try:
-                    if val in ("True", "False"):     self.cfg[key] = (val == "True")
-                    elif isinstance(orig, bool):     self.cfg[key] = bool(val)
+                    if isinstance(orig, bool):
+                        self.cfg[key] = (val == "True") if val in ("True", "False") else val
                     elif isinstance(orig, int):      self.cfg[key] = int(val)
                     elif isinstance(orig, float):    self.cfg[key] = float(val)
-                    elif val in ("", "None"):         self.cfg[key] = None
+                    elif orig is None:              self.cfg[key] = None if val in ("", "None") else int(val)
                     else:                             self.cfg[key] = val
                 except (ValueError, TypeError):      self.cfg[key] = val
         if hasattr(self, "_flip"):
@@ -3410,24 +3588,37 @@ class SettingsDialog(tk.Toplevel):
             try:
                 self.cfg["scoring_calibre_mm"] = float(self._v_scoring_calibre.get())
             except ValueError:
-                pass
+                raise ValueError("Scoring calibre must be a number.")
         if hasattr(self, "_clahe_var"):
             self.cfg["use_clahe"] = self._clahe_var.get()
         if hasattr(self, "_im_var"):
             self.cfg["ignore_misses"] = self._im_var.get()
         if hasattr(self, "_voice_enabled"):
             self.cfg["voice_enabled"] = self._voice_enabled.get()
+        if hasattr(self, "_voice_combo"):
+            index = self._voice_combo.current()
+            if index >= 0:
+                self.cfg["voice_id"] = self._voice_ids[index]
 
     def _apply(self):
-        self._collect()
-        self.apply_cb(self.cfg)
-        self._status_lbl.config(text="✓ Applied")
-        self.after(2000, lambda: self._status_lbl.config(text=""))
+        previous = self.cfg.copy()
+        try:
+            self._collect()
+            errors = validate_config(self.cfg)
+            if errors:
+                raise ValueError("\n".join(f"{k}: {v}" for k, v in errors.items()))
+            self.apply_cb(self.cfg.copy())
+        except (OSError, ValueError, TypeError) as exc:
+            self.cfg = previous
+            log.exception("Settings could not be applied")
+            messagebox.showerror("Settings not saved", str(exc), parent=self)
+            return False
+        self._status_lbl.config(text="✓ Applied and saved")
+        return True
 
     def _apply_and_close(self):
-        self._collect()
-        self.apply_cb(self.cfg)
-        self.destroy()
+        if self._apply():
+            self.destroy()
 
     def _update_zero_display(self):
         x = self.cfg.get("zero_offset_x", 0.0)

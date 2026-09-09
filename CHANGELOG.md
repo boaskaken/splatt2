@@ -1,3 +1,15 @@
+# v1.3 Community (development)
+
+- Target icon for windows, taskbar and packaged applications; legacy null save-directory values migrate silently.
+- Serial speech queue with installed voice selection, rate, volume, score-only mode and preview.
+- Validated settings, atomic JSON writes, visible load/save errors and correct empty-field/device-index handling.
+- Rotating runtime logs, UI callback errors and camera/microphone failure reporting.
+- Visible Auto marker lower bound; confidence includes spatial coverage and homography fit. Unknown/duplicate markers do not count, and stale positions decay.
+- Local Windows virtual environment launcher and dependency update script.
+- Regression tests, offline self-test and required Windows GUI/packaged-app checks in CI and release builds.
+- Camera-open requests are serialised, camera restart resets the Auto marker estimate, and ignored misses stay out of live CSV exports.
+- Version 1.2 community PR history retained. This is not an official upstream release; hardware acceptance is pending.
+
 # Splatt2 Changelog
 
 ## v1.1.0 (2026-03-29)

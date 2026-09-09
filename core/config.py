@@ -11,13 +11,17 @@ The runtime config is a plain JSON dict persisted to the user data dir.
 from __future__ import annotations
 
 import json
+import logging
+import math
+import re
+import tempfile
 import os
 import shutil
 from typing import Iterable, Optional, Tuple
 
 from core.paths import config_path, resource_path, user_targets_dir
 
-VERSION = "1.2"
+VERSION = "1.3"
 
 CONFIG_FILE = str(config_path())
 
@@ -301,24 +305,105 @@ DEFAULT_CONFIG = {
 
     # Voice feedback
     "voice_enabled": True,  # speak scores and clock positions
+    "voice_id": "",  # Empty selects the system default voice.
+    "voice_rate": 175,
+    "voice_volume": 1.0,
+    "voice_mode": "score_direction",
 }
 
 
-def load_config() -> Tuple[dict, bool]:
-    """Load the persisted config or return defaults.
+# Limits protect the camera, renderer and audio backend from invalid input.
+_LIMITS = {
+    "video_width": (160, 7680), "video_height": (120, 4320), "video_fps": (1, 240),
+    "detection_max_width": (160, 7680), "detection_max_height": (120, 4320),
+    "camera_index": (0, 100), "camera_zoom": (1, 8),
+    "aruco_marker_mm": (1, 95), "aruco_margin_mm": (0, 50),
+    "real_range_m": (0.1, 1000), "shot_circle_calibre_mm": (0.1, 50),
+    "scoring_calibre_mm": (0.1, 50), "shots_per_series": (1, 1000),
+    "target_inner_rings": (0, 100), "target_score_rings": (0, 100),
+    "audio_sample_rate": (8000, 192000), "audio_trigger_threshold": (0.005, 1),
+    "audio_transient_ratio": (1.5, 20), "audio_trigger_cooldown_ms": (0, 60000),
+    "post_shot_cooldown_s": (0, 60), "clahe_clip": (0.1, 40),
+    "brightness_target": (1, 255), "sharpen": (0, 5),
+    "smooth_alpha": (0.001, 1), "smooth_window": (3, 101), "smooth_poly": (1, 20),
+    "spike_velocity_mm": (0.1, 1000), "spike_reversal": (0, 1),
+    "trace_width": (1, 20), "trace_preshot_s": (0.01, 120),
+    "trace_final_s": (0, 120), "fading_trace_duration_s": (0.01, 120),
+    "acp_fraction": (0.01, 1), "approach_zone_factor": (1, 20),
+    "voice_rate": (80, 350), "voice_volume": (0, 1),
+}
+_CHOICES = {
+    "voice_mode": ("score", "score_direction"),
+    "camera_rotation": (0, 90, 180, 270), "flip_mode": (-1, 0, 1),
+    "camera_pixel_format": ("Auto", "MJPEG", "YUY2"),
+    "smooth_mode": ("none", "ema", "savgol"),
+}
 
-    Returns:
-        ``(cfg, is_first_run)``. ``is_first_run`` is true when no config
-        file exists or the existing one could not be parsed.
-    """
+
+def validate_config(cfg):
+    """Return readable errors without modifying the proposed settings."""
+    errors = {}
+    for key, default in DEFAULT_CONFIG.items():
+        value = cfg.get(key, default)
+        if key == "aruco_marker_count":
+            if value not in ("Auto", 4, 6, 8, "4", "6", "8"):
+                errors[key] = "Choose Auto, 4, 6 or 8."
+            continue
+        if default is None:
+            if value is not None and (type(value) is not int or value < 0):
+                errors[key] = "Use a non-negative device index or the default."
+            continue
+        if isinstance(default, bool):
+            valid = type(value) is bool
+        elif isinstance(default, int):
+            valid = type(value) is int
+        elif isinstance(default, float):
+            valid = type(value) in (int, float) and math.isfinite(value)
+        else:
+            valid = isinstance(value, str)
+        if not valid:
+            errors[key] = f"Expected {type(default).__name__}."
+            continue
+        if key in _LIMITS:
+            lo, hi = _LIMITS[key]
+            if not lo <= value <= hi:
+                errors[key] = f"Must be between {lo} and {hi}."
+        if key in _CHOICES and value not in _CHOICES[key]:
+            errors[key] = f"Choose one of {_CHOICES[key]}."
+        if key.startswith("colour_") and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            errors[key] = "Use a colour in #RRGGBB format."
+    if cfg.get("target_key", DEFAULT_CONFIG["target_key"]) not in TARGETS:
+        errors["target_key"] = "Target is not available."
+    if not any(k in errors for k in ("smooth_window", "smooth_poly")):
+        window = cfg.get("smooth_window", 11)
+        if window % 2 == 0 or cfg.get("smooth_poly", 2) >= window:
+            errors["smooth_window"] = "Use an odd window larger than the polynomial order."
+            errors["smooth_poly"] = "Polynomial order must be smaller than the window."
+    if not any(k in errors for k in ("trace_final_s", "trace_preshot_s")):
+        if cfg.get("trace_final_s", 0.2) > cfg.get("trace_preshot_s", 1.0):
+            errors["trace_final_s"] = "Cannot exceed the pre-shot window."
+            errors["trace_preshot_s"] = "Cannot be shorter than the final window."
+    if not any(k in errors for k in ("aruco_marker_mm", "aruco_margin_mm")):
+        if 2 * (cfg.get("aruco_marker_mm", 40) + cfg.get("aruco_margin_mm", 8)) >= 210:
+            errors["aruco_marker_mm"] = "Markers and margins must fit on the A4 sheet."
+            errors["aruco_margin_mm"] = "Markers and margins must fit on the A4 sheet."
+    return errors
+
+
+CONFIG_WARNINGS = []
+
+
+def load_config() -> Tuple[dict, bool]:
+    """Load valid settings; report invalid saved fields and use their defaults."""
+    CONFIG_WARNINGS.clear()
     cfg = DEFAULT_CONFIG.copy()
     if not os.path.exists(CONFIG_FILE):
         return cfg, True
     try:
-        with open(CONFIG_FILE, "r") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             saved = json.load(f)
-        # Preserve old colour choices after the config-file location migration.
-        # Explicit new names take priority if both versions are present.
+        if not isinstance(saved, dict):
+            raise ValueError("Configuration must be a JSON object")
         for old, new in {
             "target_black_rings": "target_inner_rings",
             "colour_target_paper": "colour_target_outer",
@@ -326,17 +411,39 @@ def load_config() -> Tuple[dict, bool]:
         }.items():
             if old in saved:
                 saved.setdefault(new, saved.pop(old))
+        # Older settings dialogs stored an empty directory as JSON null.
+        if saved.get("save_directory") is None:
+            saved["save_directory"] = ""
         cfg.update(saved)
+        errors = validate_config(cfg)
+        for key, reason in errors.items():
+            CONFIG_WARNINGS.append(f"{key}: {reason} Default restored.")
+            cfg[key] = DEFAULT_CONFIG[key]
+        if CONFIG_WARNINGS:
+            logging.getLogger(__name__).warning("Invalid config: %s", CONFIG_WARNINGS)
         return cfg, False
-    except Exception:
-        return cfg, True
+    except (OSError, ValueError, TypeError) as exc:
+        CONFIG_WARNINGS.append(f"Could not load settings: {exc}. Defaults used.")
+        logging.getLogger(__name__).exception("Could not load settings")
+        return DEFAULT_CONFIG.copy(), True
 
 
 def save_config(cfg: dict) -> None:
-    """Write the config to the user data dir, ignoring write errors."""
+    """Validate and atomically replace the file; propagate failures to the UI."""
+    errors = validate_config(cfg)
+    if errors:
+        raise ValueError("\n".join(f"{k}: {v}" for k, v in errors.items()))
+    directory = os.path.dirname(CONFIG_FILE)
+    os.makedirs(directory, exist_ok=True)
+    name = None
     try:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception as e:
-        print(f"[Config] Could not save config: {e}")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".config-", suffix=".tmp", delete=False) as f:
+            name = f.name
+            json.dump(cfg, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name, CONFIG_FILE)
+    finally:
+        if name is not None and os.path.exists(name):
+            os.unlink(name)

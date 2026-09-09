@@ -6,9 +6,15 @@ No special hardware required — just a webcam, a microphone, a printer, and a c
 
 ---
 
-## Version 1.2 — Community integration
+## Version 1.3 — Community integration
 
-This community integration version combines all community pull requests that were open in `Nonkeydonk/splatt2` when the `v1.2` branch was assembled: #2, #3, #4, #5, #6, #7, #8 and #11. It includes voice feedback, cross-platform packaging, UI and performance improvements, trace playback, camera zoom and tracker view, marker-sheet DPI metadata, the NSRA 25-yard prone rifle target, and configurable target colours and ring-score labels.
+Version 1.3 builds on the combined community work in v1.2. It adds one speech queue, voice selection and preview, validated settings with atomic saves, runtime logs, clearer marker counts, and tracking confidence based on marker visibility, spread and fit. The UI identifies this as **v1.3 Community**.
+
+This is a development version, not an official upstream release. Hardware acceptance testing is still required. The Windows CI workflow runs settings/UI tests and checks the packaged executable before offering a build artifact; a successful local source test alone does not certify an executable. See [the v1.3 test checklist](docs/V1.3_TESTING.md).
+
+### Included community pull requests
+
+The v1.2 foundation combines all community pull requests that were open in `Nonkeydonk/splatt2` when the `v1.2` branch was assembled: #2, #3, #4, #5, #6, #7, #8 and #11. It includes voice feedback, cross-platform packaging, UI and performance improvements, trace playback, camera zoom and tracker view, marker-sheet DPI metadata, the NSRA 25-yard prone rifle target, and configurable target colours and ring-score labels.
 
 Merge conflicts have been resolved to combine these contributions. This branch also includes Auto marker selection and a voice-feedback checkbox adjustment. This is a community integration version, not an official upstream release; pull requests opened later are not automatically included.
 
@@ -43,13 +49,13 @@ Changing the pellet calibre in Settings instantly shifts all scoring bands — o
 - Windows 10/11, macOS 12+, or a recent 64-bit Linux desktop
 - A webcam (USB recommended for barrel-mounting; built-in works for testing)
 - A microphone (built-in laptop mic is fine for dry-fire; closer to the action is better for live fire)
-- **Python 3.9+** is only needed when running from source — pre-built binaries bundle their own runtime
+- **Python 3.12 (recommended and tested)** is only needed when running from source — pre-built binaries bundle their own runtime
 
 ---
 
 ## Quick Start (pre-built binary)
 
-Download the latest release for your OS from the [Releases page](../../releases/latest):
+For published community builds, use the [community Releases page](https://github.com/boaskaken/splatt2/releases). Version 1.3 development artifacts are available from successful Windows CI runs after this branch is pushed and CI completes; they are not automatically published as releases. Download the build for your OS:
 
 - `splatt2-windows-x64.zip`
 - `splatt2-macos-arm64.zip` (Apple Silicon) or `splatt2-macos-x64.zip` (Intel)
@@ -75,7 +81,7 @@ Override with `SPLATT2_USER_DIR=/some/path` for testing or portable installs.
 
 ## Quick Start (run from source)
 
-1. Install Python 3.9+ from https://python.org (Windows: tick **"Add Python to PATH"**)
+1. Install Python 3.12 with Tcl/Tk from https://python.org (Windows: tick **"Add Python to PATH"**)
 2. Clone or download this repository
 3. Launch:
    - **Windows** — double-click `RUN.bat`
@@ -155,9 +161,9 @@ Below the feed: a **◎ Focus assist** toggle (for manual-focus lenses) that rev
 
 The **🎛 Cam Props** button (next to Settings) opens the Windows native camera properties dialog where you can adjust brightness, contrast, saturation, sharpness, and exposure directly via the driver. Increasing contrast and sharpness in this dialog significantly improves ArUco detection.
 
-The tracking quality bar shows what fraction of configured markers are visible. In Auto mode, the total is estimated from the highest recognised ID: 0–3 imply at least 4 markers, 4–5 at least 6, and 6–7 imply 8. The estimate only increases until the tracker restarts, so temporary occlusion does not reduce it. Hidden markers can make the initial estimate too low; select a fixed count for an exact denominator. IDs identify positions, not the total count. Sheet dimensions, marker size, margin and dictionary must still match the print.
+The tracking quality percentage is a heuristic confidence measure, not a promise of scoring accuracy. It combines the fraction of expected markers visible, how widely their corners cover the board, the RANSAC inlier fraction and the fit error in millimetres. Unknown or duplicate IDs are excluded. The UI shows recognised markers as “4 visible / at least 6 expected” in Auto mode, or an exact configured denominator in manual mode. Auto estimates only increase until the camera is restarted or the tracker settings are reapplied; hidden markers can make an initial estimate too low. IDs 0–3 indicate at least four markers, 4–5 at least six, and 6–7 eight. Size, margin, dictionary and sheet dimensions must still match the print. A briefly reused position is labelled “last position” and its confidence decays. Low-confidence or expired positions do not update the aim.
 
-- **Green (>60%)** — all or most markers detected, full accuracy
+- **Green (>60%)** — stronger marker geometry and fit; still a confidence estimate
 - **Yellow (30–60%)** — partial detection, homography being reused
 - **Red (<30%)** — tracking lost, shots will be rejected
 
@@ -282,7 +288,13 @@ supports sharpening and configurable maximum detection dimensions.
 | Approach zone | How far outside the target the software tracks approach (× scoring radius) |
 | Pre-shot window | How many seconds before the shot the trace turns yellow |
 | Final window | How many seconds before the shot the trace turns red |
-| Voice enabled | Enable offline spoken scores and clock positions after shots. Enabled by default; configured under Advanced → Voice Feedback. |
+| Voice enabled | Enable offline speech after accepted shots (default on). Disabling clears waiting announcements; speech already in progress may finish. |
+| Speaking speed | 80–350 words/minute; default 175. |
+| Voice volume | 0–1; default 1. Windows master volume also applies. |
+| Announcement | `score_direction` (default) or `score` only. |
+| Voice / Load voices | Choose an installed OS voice. System default is used until a voice is selected. Announcements use English; choose an English voice. |
+| Test voice | Preview the current choices without saving or registering a shot. |
+| Diagnostics & Updates | Open the user data folder or community releases page. |
 
 ### Spike Filter (Settings → Camera)
 | Setting | Description |
@@ -386,7 +398,7 @@ Each `.csv` has a companion `.json` file with full trace data for the Series Rev
 - On Windows, check Camera privacy settings (Settings → Privacy → Camera)
 
 **Dependencies fail to install**
-- Make sure Python 3.9+ is installed: open Command Prompt and type `python --version`
+- Make sure Python 3.12 with Tcl/Tk is installed: open Command Prompt and type `python --version`
 - Try manually: `pip install opencv-python sounddevice numpy Pillow scipy`
 - Check your internet connection — pip downloads from pypi.org
 
@@ -479,3 +491,13 @@ MIT — do whatever you like with it, but no warranty is implied.
 - Only fire live rounds on an authorised range, observing all range safety rules
 - The software does not know whether a round is live or blank — treat every shot as live
 - Do not point any firearm at a person or animal under any circumstances
+
+## Running and updating v1.3 on Windows
+
+Extract a packaged build into a new folder and start `splatt2.exe`. Keep the whole folder together. Settings and sessions stay in the per-user data folder when replacing the application. Do not copy an incomplete executable over an existing installation.
+
+For source checkouts, `RUN.bat` creates a local `.venv` and installs dependencies on first use. Later starts reuse it. After updating the source or if dependency installation failed, run `UPDATE.bat`, then `RUN.bat`. These scripts do not fetch Git branches or modify the system Python. Use a full Python 3.12 installation with Tcl/Tk enabled. The build script now rejects a broken Tcl/Tk runtime before packaging.
+
+Settings are validated before Apply. Invalid input or a disk error leaves the dialog open with a message. Saves replace the JSON file atomically; a failed replacement preserves the previous file. Invalid fields in an existing config are restored to defaults with a warning on startup.
+
+Runtime diagnostics are stored in `splatt2.log` in the data folder (Windows: `%APPDATA%\Splatt2`). Logs rotate at 1 MB with three backups. Startup crashes also retain the existing `splatt2_crash.log`. Camera and microphone errors are shown in the status area, speech failures do not stop scoring, and UI callback errors show a dialog with the log location. Restart the camera after reconnecting a device.

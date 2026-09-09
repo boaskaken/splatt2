@@ -1,30 +1,55 @@
-# Python
+# Python bytecode and package metadata
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 *.egg-info/
+.eggs/
 
-# App-generated files
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Test, lint and coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local environment variables (keep shareable examples)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# App-generated configuration, session data and diagnostics
 splatt2_config.json
-splatt2_crash.log
+.config-*.tmp
+splatt2_crash.log*
+splatt2.log*
 sessions/
+/smoke.json
 
-# OS
+# Generated marker sheets
+aruco_sheet*.png
+
+# Build outputs; build scripts, specs and assets/ icons are source files
+/dist/
+/build/_pyinstaller_work/
+/build/icons/
+/splatt2-*.zip
+
+# Operating system files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Editor
+# Editor-local files
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# Generated images (from marker sheet dialog)
-aruco_sheet*.png
-
-# Build artifacts
-dist/
-build/_pyinstaller_work/
-build/icons/
