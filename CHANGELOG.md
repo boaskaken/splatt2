@@ -1,4 +1,6 @@
-# v1.3 Community (development)
+# Splatt2 Changelog
+
+## v1.3 Community (development)
 
 - Target icon for windows, taskbar and packaged applications; legacy null save-directory values migrate silently.
 - Serial speech queue with installed voice selection, rate, volume, score-only mode and preview.
@@ -10,7 +12,24 @@
 - Camera-open requests are serialised, camera restart resets the Auto marker estimate, and ignored misses stay out of live CSV exports.
 - Version 1.2 community PR history retained. This is not an official upstream release; hardware acceptance is pending.
 
-# Splatt2 Changelog
+## v1.2 — Configurable targets and community integration
+
+### Target customisation by boaskaken
+
+- Configurable inner and outer target colours, with separate ring-line colours and colour pickers in Settings → Colours.
+- Adjustable number of inner-colour rings, counted from the centre outward.
+- Configurable ring-score labels: choose how many rings are labelled from the inside out, with independent top, right, bottom and left directions in Settings → Target.
+- Defaults in `core/config.py`, persisted user settings and migration of the earlier black/paper colour names to inner/outer names.
+- Updated target appearance documentation and an additional ISSF 10m air pistol target definition.
+
+### Community contributions integrated by boaskaken
+
+- Combined the target customisation work with all community pull requests open in `Nonkeydonk/splatt2` when v1.2 was assembled: #2–#8 and #11, including their dependencies.
+- Included voice announcements, cross-platform PyInstaller packaging, UI consistency and performance improvements, trace playback, camera zoom and tracker view, marker-sheet DPI metadata, and the NSRA 25-yard prone rifle target.
+- Resolved merge conflicts while preserving the configurable target appearance and ring-score labels.
+- Added Auto marker selection alongside the fixed 4/6/8-marker options and adjusted the voice-feedback checkbox.
+
+This is a community integration version, not an official upstream release. Later community commits and pull requests are not automatically included.
 
 ## v1.1.0 (2026-03-29)
 
